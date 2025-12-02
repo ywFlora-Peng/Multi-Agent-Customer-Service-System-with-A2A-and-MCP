@@ -1,0 +1,10 @@
+# Core Frameworks
+google-genai
+google-adk
+a2a-sdk
+fastmcp
+
+# Server/Async Utilities
+uvicorn
+httpx
+nest-asyncio
