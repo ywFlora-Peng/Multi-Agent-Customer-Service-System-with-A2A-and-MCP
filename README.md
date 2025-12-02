@@ -14,7 +14,7 @@ The system operates as three independent services coordinating via A2A interface
 | **Customer Data Agent** | `11001` | Executes all database CRUD operations via internal MCP-style tools. | Data Fetch (Tools) |
 | **Support Agent** | `11002` | Generates the final, polite, natural language response for the customer. | Synthesis, Final Output |
 
-## ⚙️ Setup and Installation
+## Setup and Installation
 
 ### 1. Prerequisites
 
