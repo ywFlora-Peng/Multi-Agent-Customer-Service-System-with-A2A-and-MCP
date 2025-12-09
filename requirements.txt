@@ -1,10 +1,18 @@
-# Core Frameworks
+# --- Core LLM & ADK Frameworks ---
 google-genai
 google-adk
+
+# --- A2A Protocol / Agents SDK ---
 a2a-sdk
+
+# --- MCP Server Framework ---
 fastmcp
 
-# Server/Async Utilities
+# --- HTTP & Async Runtime ---
 uvicorn
 httpx
 nest-asyncio
+
+# --- Utilities for SQLite & JSON operations ---
+pydantic
+python-dotenv
