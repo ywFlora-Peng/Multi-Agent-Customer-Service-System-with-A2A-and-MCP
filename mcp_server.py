@@ -1,113 +1,164 @@
-"""
-MCP server exposing customer & ticket tools for the A2A assignment.
-
-- Uses FastMCP (official Python MCP SDK).
-- Serves via Streamable HTTP so it supports tools/list and tools/call.
-- Backs all tools with a SQLite database created by `database_setup.py`.
-
-Test with MCP Inspector by connecting to:
-    http://localhost:8000/mcp
-"""
-
-# mcp_server.py
+# mcp_server.py  —— FastMCP HTTP ver customer/ticket MCP server
 
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List
 
-# NOTE: DB_PATH must match the path used in database_setup.py
+from mcp.server.fastmcp import FastMCP
+
 DB_PATH = "support.db"
 
-def get_connection() -> sqlite3.Connection:
+mcp = FastMCP(
+    "customer_support_mcp",
+    stateless_http=True,
+    json_response=True, 
+)
+
+
+def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-# Tool 1: Get Customer
-def get_customer(customer_id: int) -> Dict[str, Any]:
-    """Fetch a single customer by ID."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, name, email, phone, status FROM customers WHERE id = ?", (customer_id,)
-        ).fetchone()
-        if row is None:
-            return {"found": False, "customer": None}
-        return {"found": True, "customer": dict(row)}
 
-# Tool 2: List Customers
-def list_customers(status: str = "active", limit: int = 20) -> List[Dict[str, Any]]:
-    """List customers filtered by status ('active', 'disabled')."""
-    with get_connection() as conn:
+def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {k: row[k] for k in row.keys()}
+
+
+@mcp.tool()
+def get_customer(customer_id: int) -> Dict[str, Any]:
+    """Return a single customer record by ID."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM customers WHERE id = ?",
+            (customer_id,),
+        ).fetchone()
+
+    if row is None:
+        return {"found": False, "customer": None}
+
+    return {"found": True, "customer": _row_to_dict(row)}
+
+
+@mcp.tool()
+def list_customers(status: str = "active", limit: int = 20) -> Dict[str, Any]:
+    """List customers filtered by status (active/disabled)."""
+    with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, email, phone, status FROM customers WHERE status = ? ORDER BY id LIMIT ?",
+            """
+            SELECT * FROM customers
+            WHERE status = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
             (status, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
 
-# Tool 3: Update Customer
+    return {
+        "status": status,
+        "count": len(rows),
+        "customers": [_row_to_dict(r) for r in rows],
+    }
+
+
+@mcp.tool()
 def update_customer(customer_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Update a customer record (name, email, phone, status)."""
+    """Update basic customer fields like name/email/phone/status."""
     if not data:
-        return {"updated": False, "reason": "No fields provided"}
-    allowed_fields = {"name", "email", "phone", "status"}
-    fields = [k for k in data.keys() if k in allowed_fields]
-    if not fields:
-        return {"updated": False, "reason": "No valid fields in data"}
-    set_clause = ", ".join(f"{f} = ?" for f in fields)
-    values = [data[f] for f in fields]
-    with get_connection() as conn:
+        return {"ok": False, "message": "No fields to update."}
+
+    allowed = {"name", "email", "phone", "status"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return {"ok": False, "message": "No valid fields to update."}
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates.keys())
+    values: List[Any] = list(updates.values())
+    values.append(datetime.utcnow().isoformat())
+    values.append(customer_id)
+
+    with _connect() as conn:
         cur = conn.execute(
-            f"UPDATE customers SET {set_clause}, updated_at = ? WHERE id = ?",
-            (*values, datetime.utcnow().isoformat(), customer_id),
+            f"""
+            UPDATE customers
+            SET {set_clause}, updated_at = ?
+            WHERE id = ?
+            """,
+            values,
         )
         conn.commit()
-        if cur.rowcount == 0:
-            return {"updated": False, "reason": "Customer not found"}
-        return {"updated": True, "customer_id": customer_id, "updated_fields": fields}
 
-# Tool 4: Create Ticket
-def create_ticket(
-    customer_id: int,
-    issue: str,
-    priority: str = "medium",
-) -> Dict[str, Any]:
-    """Create a support ticket."""
+        if cur.rowcount == 0:
+            return {"ok": False, "message": f"Customer {customer_id} not found."}
+
+        row = conn.execute(
+            "SELECT * FROM customers WHERE id = ?",
+            (customer_id,),
+        ).fetchone()
+
+    return {"ok": True, "customer": _row_to_dict(row)}
+
+
+@mcp.tool()
+def create_ticket(customer_id: int, issue: str, priority: str = "medium") -> Dict[str, Any]:
+    """Create a new ticket for the customer."""
     if priority not in {"low", "medium", "high"}:
-        return {"created": False, "reason": "Invalid priority"}
-    with get_connection() as conn:
-        row = conn.execute("SELECT id FROM customers WHERE id = ?", (customer_id,)).fetchone()
-        if row is None:
-            return {"created": False, "reason": "Customer not found"}
+        return {"ok": False, "message": f"Invalid priority: {priority}"}
+
+    now = datetime.utcnow().isoformat()
+
+    with _connect() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM customers WHERE id = ?",
+            (customer_id,),
+        ).fetchone()
+        if exists is None:
+            return {"ok": False, "message": f"Customer {customer_id} not found."}
+
         cur = conn.execute(
             """
             INSERT INTO tickets (customer_id, issue, status, priority, created_at)
             VALUES (?, ?, 'open', ?, ?)
             """,
-            (customer_id, issue, priority, datetime.utcnow().isoformat()),
+            (customer_id, issue, priority, now),
         )
+        ticket_id = cur.lastrowid
         conn.commit()
-        return {"created": True, "ticket_id": cur.lastrowid, "priority": priority}
 
-# Tool 5: Get Customer History
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?",
+            (ticket_id,),
+        ).fetchone()
+
+    return {"ok": True, "ticket": _row_to_dict(row)}
+
+
+@mcp.tool()
 def get_customer_history(customer_id: int) -> Dict[str, Any]:
-    """Return all tickets for a given customer as their support history."""
-    with get_connection() as conn:
+    """Return customer profile + ticket history."""
+    with _connect() as conn:
         cust = conn.execute(
-            "SELECT id, name, status FROM customers WHERE id = ?", (customer_id,)
+            "SELECT * FROM customers WHERE id = ?",
+            (customer_id,),
         ).fetchone()
         if cust is None:
             return {"found": False, "customer": None, "tickets": []}
+
         rows = conn.execute(
-            "SELECT id, issue, status, priority, created_at FROM tickets WHERE customer_id = ? ORDER BY created_at DESC",
+            """
+            SELECT * FROM tickets
+            WHERE customer_id = ?
+            ORDER BY created_at DESC
+            """,
             (customer_id,),
         ).fetchall()
-        return {
-            "found": True,
-            "customer": dict(cust),
-            "tickets": [dict(r) for r in rows],
-        }
+
+    return {
+        "found": True,
+        "customer": _row_to_dict(cust),
+        "tickets": [_row_to_dict(r) for r in rows],
+    }
+
 
 if __name__ == "__main__":
-    # Optional: Run a FastMCP server here if needed for testing, but typically 
-    # the functions are just imported by the Data Agent.
-    print("MCP tools defined. Run the agents directly.")
+    mcp.run(transport="streamable-http")
