@@ -30,16 +30,30 @@ from mcp_server import get_customer, list_customers, update_customer, create_tic
 DATA_AGENT_PORT = 11001
 DATA_AGENT_URL = f"http://localhost:{DATA_AGENT_PORT}"
 
+
 data_agent = Agent(
     model="gemini-2.5-flash",
     name="customer_data_agent",
     instruction="""
-    You are the Customer Data Agent in a multi-agent customer support system.
-    You DO NOT talk directly to end users; you serve other agents (Router/Support) via A2A.
-    CRITICAL: Use your provided tools (get_customer, list_customers, etc.) to fulfill the data request from the calling agent.
-    When you reply: Return the raw output from the tool call. Be concise, providing only the necessary data.
-    """,
-    tools=[get_customer, list_customers, update_customer, create_ticket, get_customer_history],
+You are the Customer Data Agent in a multi-agent customer support system.
+
+You NEVER talk directly to end users; you only serve other agents (Router / Support) via A2A.
+
+CRITICAL:
+- Use the external MCP database tools (exposed by the MCP server) to get your answers.
+- Typical tools you can call include:
+  - get_customer(customer_id)
+  - list_customers(status, limit)
+  - update_customer(customer_id, data)
+  - create_ticket(customer_id, issue, priority)
+  - get_customer_history(customer_id)
+
+Behavior:
+- For each request, decide which MCP tool(s) to call and call them explicitly.
+- Do NOT hallucinate data; always rely on tool results.
+- Reply with concise, structured JSON-like text so the Router or Support Agent can easily parse it.
+""",
+    tools=[customer_db_toolset],
 )
 
 data_agent_card = AgentCard(
